@@ -10,7 +10,8 @@ link: https://databricks-prod-cloudfront.cloud.databricks.com/public/4027ec902e2
 - No other python packages installs are needed
 
 ### Methodology
-The project has been created mainly in a jupyter notebook within Databricks. There is also a blog post explaining a little bit more the steps performed during the modelling.
+The project has been created mainly in a jupyter notebook within Databricks. There is also a blog post explaining a little bit more the steps performed during the modelling. 
+https://medium.com/@manumg8/sparkify-churn-prediction-with-apache-spark-f3f2d6b363be
 
 ### Results
 The model created is based on a decision tree classification algorithm. It has a 60% of recall score and 74% of F1 score.  

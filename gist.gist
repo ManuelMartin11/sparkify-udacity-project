@@ -1,0 +1,83 @@
+from pyspark.sql import functions as pyfun
+from pyspark.sql.window import Window
+from pyspark.sql import functions as F
+
+def getSongsPlayedByUser(dataFrameIn):
+  dataFrameOut = dataFrameIn.where(dataFrameIn["page"] == "NextSong").groupby("userId").agg({"page" : "count"}).withColumnRenamed("count(page)", "total_songs_played")
+  return dataFrameOut
+
+def getHoursByUsers(dataFrameIn):
+  dataFrameOut = dataFrameIn.groupby("userId").agg({"length" : "sum"}).withColumnRenamed("sum(length)", "total_hours").withColumn("total_hours", col("total_hours").cast("integer"))
+  return dataFrameOut
+
+def getTotalSessionsByUser(dataFrameIn):
+  dataFrameOut = dataFrameIn.groupby("userId").agg(pyfun.countDistinct("sessionId")).withColumnRenamed("count(DISTINCT sessionId)", "total_sessions")
+  return dataFrameOut
+
+def getMeanHoursPerSession(dataFrameIn):
+  dataFrameOut = dataFrameIn.select("userId", "length", "sessionId").groupby(["userId", "sessionId"]).agg({"length": "sum"}).groupby("userId").agg({"sum(length)": "average"}).withColumnRenamed("avg(sum(length))", "avg_hours_per_session").withColumn("avg_hours_per_session", col("avg_hours_per_session").cast("integer"))
+  return dataFrameOut
+
+def getLevelChanges(dataFrameIn):
+  dataFrameOut = dataFrameIn.groupby("userId", "level").agg(pyfun.count("level").alias("nlevel")).withColumn("nzeros", pyfun.when(pyfun.col("level") == 0, pyfun.col("nlevel")).otherwise(0)).withColumn("nones", pyfun.when(pyfun.col("level") == 1, pyfun.col("nlevel")).otherwise(0)).select("userId", "nzeros", "nones").groupBy("userId").agg({"nzeros": "sum", "nones" : "sum"}).withColumnRenamed("sum(nzeros)", "n_free_items").withColumnRenamed("sum(nones)", "n_paid_items")
+  return dataFrameOut
+
+def getCountOfStages(dataFrameIn):
+  dataFrameOut_0 = dataFrameIn.where(pyfun.col("page") == "Thumbs Down").groupby("userId").agg({"page" : "count"}).withColumnRenamed("count(page)", "n_thumbs_down")
+  dataFrameOut_1 = dataFrameIn.where(pyfun.col("page") == "Thumbs Up").groupby("userId").agg({"page" : "count"}).withColumnRenamed("count(page)", "n_thumbs_up")
+  dataFrameOut_2 = dataFrameIn.where(pyfun.col("page") == "Upgrade").groupby("userId").agg({"page" : "count"}).withColumnRenamed("count(page)", "n_upgrades")
+  dataFrameOut_3 = dataFrameIn.where(pyfun.col("page") == "Help").groupby("userId").agg({"page" : "count"}).withColumnRenamed("count(page)", "n_helps")
+  dataFrameOut = dataFrameOut_0.join(dataFrameOut_1, "userId").join(dataFrameOut_2, "userId").join(dataFrameOut_3, "userId")
+  return dataFrameOut
+
+def getChurnsByUser(dataFrameIn):
+  dataFrameOut = dataFrameIn.groupBy("userId").agg({"churn": "sum"}).withColumnRenamed("sum(churn)", "total_churns")
+  return dataFrameOut
+
+def getTimeSpansFeatures(dataFrameIn):
+  
+  # Get time from first use to last use
+  dataFrameOut1 = dataFrameIn.groupby("userId").agg({"ts": "min"}).withColumnRenamed("min(ts)", "first_use_ts")
+  dataFrameOut2 = dataFrameIn.groupby("userId").agg({"ts": "max"}).withColumnRenamed("max(ts)", "last_use_ts")
+  dataFrameOut = dataFrameOut2.join(dataFrameOut1, "userId")
+  dataFrameOut = dataFrameOut.withColumn("first_use_ts", pyfun.unix_timestamp(dataFrameOut.first_use_ts))
+  dataFrameOut = dataFrameOut.withColumn("last_use_ts", pyfun.unix_timestamp(dataFrameOut.last_use_ts))
+  dataFrameOut = dataFrameOut.withColumn("time_from_first_use_to_last", pyfun.col("last_use_ts") - pyfun.col("first_use_ts"))
+  
+  # Get average time between sessions
+  dataFrameOut_ = dataFrameIn.groupby("sessionId", "userId").agg(pyfun.min("ts"), pyfun.max("ts")).sort("userid", "sessionId")
+  dataFrameOut_ = dataFrameOut_.withColumn("session_duration", F.unix_timestamp(F.col("max(ts)")) - F.unix_timestamp(F.col("min(ts)")))
+  window = Window.partitionBy().orderBy("userId", "sessionId")
+  dataFrameOut_ = dataFrameOut_.withColumn("prev_min_ts", F.lag(F.col("min(ts)")).over(window))
+  dataFrameOut_ = dataFrameOut_.withColumn("prev_user_id", F.lag(F.col("userId")).over(window))
+  dataFrameOut_ = dataFrameOut_.withColumn("time_between_session", 
+                     F.when(F.col("prev_user_id") != "null", 0).when(F.col("prev_user_id") == F.col("userId"), 
+                            F.unix_timestamp(F.col("max(ts)")) - F.unix_timestamp(F.col("prev_min_ts"))).otherwise(0))
+  dataFrameOut_ = dataFrameOut_.groupby("userId").agg({"time_between_session": "avg"}).withColumnRenamed("avg(time_between_session)", "avg_time_between_session").withColumn("avg_time_between_session", F.col("avg_time_between_session").cast("integer"))
+  dataFrameOut_ = dataFrameOut_.withColumn("avg_time_between_session", F.col("avg_time_between_session")/86400)
+  dataFrameOut_ = dataFrameOut_.withColumn("avg_time_between_session", F.round(F.col("avg_time_between_session"), 2))
+  dataFrameOut_ = dataFrameOut_.withColumnRenamed("avg_time_between_session", "avg_days_between_session")
+  dataFrameOutFinal = dataFrameOut.join(dataFrameOut_, "userId")
+  return dataFrameOutFinal
+  
+df_hoursByUser = getHoursByUsers(df)
+df_songsByUser = getSongsPlayedByUser(df)
+df_sessionsByUser = getTotalSessionsByUser(df)
+df_meanHoursPerSession = getMeanHoursPerSession(df)
+df_levelChanges = getLevelChanges(df)
+df_stagesCount = getCountOfStages(df)
+df_withChurns = getChurnsByUser(df)
+df_withTimeSpans = getTimeSpansFeatures(df)
+
+dfFinal = df_hoursByUser.join(df_songsByUser, "userId").join(df_sessionsByUser, "userId").join(df_meanHoursPerSession, "userId").join(df_levelChanges, "userId").join(df_stagesCount, "userId").join(df_withChurns, "userId").join(df_withTimeSpans, "userId")
+dfFinal = dfFinal.withColumn("total_hours", dfFinal["total_hours"].cast("integer"))
+dfFinal = dfFinal.withColumn("total_songs_played", dfFinal["total_songs_played"].cast("integer"))
+dfFinal = dfFinal.withColumn("avg_hours_per_session", dfFinal["avg_hours_per_session"].cast("integer"))
+dfFinal = dfFinal.withColumn("n_free_items", dfFinal["n_free_items"].cast("integer"))
+dfFinal = dfFinal.withColumn("n_paid_items", dfFinal["n_paid_items"].cast("integer"))
+dfFinal = dfFinal.withColumn("n_thumbs_down", dfFinal["n_thumbs_down"].cast("integer"))
+dfFinal = dfFinal.withColumn("n_upgrades", dfFinal["n_upgrades"].cast("integer"))
+dfFinal = dfFinal.withColumn("n_helps", dfFinal["n_helps"].cast("integer"))
+dfFinal = dfFinal.withColumn("total_churns", dfFinal["total_churns"].cast("integer"))
+  
+display(dfFinal)
